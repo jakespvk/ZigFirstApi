@@ -120,6 +120,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const zqlite = b.dependency("zqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.linkLibC();
+    exe.linkSystemLibrary("sqlite3");
+    exe.root_module.addImport("zqlite", zqlite.module("zqlite"));
+
     // the executable from your call to b.addExecutable(...)
     exe.root_module.addImport("httpz", httpz.module("httpz"));
 }
