@@ -46,9 +46,9 @@ const User = struct {
 };
 
 const Subscription = struct {
-    rowLimit: u16,
-    columnLimit: u16,
-    pollFrequency: bool,
+    rowLimit: ?u16,
+    columnLimit: ?u16,
+    pollFrequency: ?bool,
     subscribed: bool,
 };
 
@@ -78,7 +78,7 @@ const DbType = enum {
 
 fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req;
-    var rows = try app.conn.rows("select * from user order by name", .{});
+    var rows = try app.conn.rows("select * from user as u inner join subscription as s on u.id = s.user_id inner join db_adapter as d on u.id = d.user_id order by u.name", .{});
     defer rows.deinit();
     if (rows.err) |err| {
         res.status = 500;
@@ -88,10 +88,20 @@ fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     var users = try std.ArrayList(User).initCapacity(res.arena, 4);
     defer users.deinit(res.arena);
     while (rows.next()) |row| {
-        const id: i64 = row.int(0);
-        const name: []const u8 = try res.arena.dupe(u8, row.text(1));
-        const email: []const u8 = try res.arena.dupe(u8, row.text(2));
-        try users.append(res.arena, User{ .id = id, .name = name, .email = email });
+        try users.append(res.arena, User{
+            .id = row.int(0),
+            .name = try res.arena.dupe(u8, row.text(1)),
+            .email = try res.arena.dupe(u8, row.text(2)),
+            .subscription = Subscription{
+                .subscribed = row.get(bool, 3),
+                .columnLimit = row.int(4),
+                .rowLimit = row.int(5),
+                .pollFrequency = row.boolean(6),
+            },
+            .dbAdapter = DatabaseAdapter{
+                .dbType = try res.arena.dupe(u8, row.text(7)),
+            },
+        });
     }
     const usersSlice = try users.toOwnedSlice(res.arena);
     try res.json(usersSlice, .{});
@@ -99,33 +109,46 @@ fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
 
 fn getUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     const id_param = req.param("id").?;
-    var id: i64 = undefined;
-    var name: []const u8 = undefined;
-    var email: []const u8 = undefined;
+    var user: User = undefined;
     if (try app.conn.row("select * from user where id = (?1)", .{id_param})) |row| {
         defer row.deinit();
-        id = row.int(0);
-        name = try res.arena.dupe(u8, row.text(1));
-        email = try res.arena.dupe(u8, row.text(2));
+        user.id = row.int(0);
+        user.name = try res.arena.dupe(u8, row.text(1));
+        user.email = try res.arena.dupe(u8, row.text(2));
+        user.subscription = Subscription{
+            .subscribed = row.boolean(3),
+            .columnLimit = row.int(4),
+            .rowLimit = row.int(5),
+            .pollFrequency = row.boolean(6),
+        };
+        user.dbAdapter = DatabaseAdapter{
+            .dbType = row.text(7),
+        };
     } else {
         res.status = 404;
         return;
     }
-    const user = User{ .id = id, .name = name, .email = email };
     try res.json(user, .{});
 }
 
 fn getUserQuery(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     const query = try req.query();
-    var id: i64 = undefined;
-    var name: []const u8 = undefined;
-    var email: []const u8 = undefined;
+    var user: User = undefined;
     if (query.get("id")) |query_id| {
         if (try app.conn.row("select * from user where id = (?1)", .{query_id})) |row| {
             defer row.deinit();
-            id = row.int(0);
-            name = try res.arena.dupe(u8, row.text(1));
-            email = try res.arena.dupe(u8, row.text(2));
+            user.id = row.int(0);
+            user.name = try res.arena.dupe(u8, row.text(1));
+            user.email = try res.arena.dupe(u8, row.text(2));
+            user.subscription = Subscription{
+                .subscribed = row.boolean(3),
+                .columnLimit = row.int(4),
+                .rowLimit = row.int(5),
+                .pollFrequency = row.boolean(6),
+            };
+            user.dbAdapter = DatabaseAdapter{
+                .dbType = row.text(7),
+            };
         } else {
             res.status = 404;
             return;
@@ -134,7 +157,6 @@ fn getUserQuery(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
         res.status = 404;
         return;
     }
-    const user = User{ .id = id, .name = name, .email = email };
     try res.json(user, .{});
 }
 
@@ -230,7 +252,7 @@ fn updateUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
 fn createDb(app: *App) !void {
     try app.conn.exec("create table if not exists user (id integer primary key, name text not null, email text not null)", .{});
     try app.conn.exec("create table if not exists subscription (id integer primary key, user_id integer not null, subscribed boolean, row_limit integer, column_limit integer, poll_frequency boolean, foreign key(user_id) references user(id))", .{});
-    try app.conn.exec("create table if not exists database_adapter (id integer primary key, user_id integer not null, type text check(type in (null, 'Attio','ActiveCampaign')) null default null, foreign key(user_id) references user(id))", .{});
+    try app.conn.exec("create table if not exists database_adapter (id integer primary key, user_id integer not null, type text check(type in ('None', 'Attio','ActiveCampaign')) default 'None', foreign key(user_id) references user(id))", .{});
 }
 
 fn createData(app: *App) !void {
