@@ -46,8 +46,8 @@ const User = struct {
 };
 
 const Subscription = struct {
-    rowLimit: ?u16,
-    columnLimit: ?u16,
+    rowLimit: ?i64,
+    columnLimit: ?i64,
     pollFrequency: ?bool,
     subscribed: bool,
 };
@@ -78,7 +78,7 @@ const DbType = enum {
 
 fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req;
-    var rows = try app.conn.rows("select * from user as u inner join subscription as s on u.id = s.user_id inner join db_adapter as d on u.id = d.user_id order by u.name", .{});
+    var rows = try app.conn.rows("select * from user as u inner join subscription as s on u.id = s.user_id inner join database_adapter as d on u.id = d.user_id order by u.name", .{});
     defer rows.deinit();
     if (rows.err) |err| {
         res.status = 500;
@@ -94,12 +94,14 @@ fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
             .email = try res.arena.dupe(u8, row.text(2)),
             .subscription = Subscription{
                 .subscribed = row.get(bool, 3),
-                .columnLimit = row.int(4),
-                .rowLimit = row.int(5),
+                .columnLimit = row.nullableInt(4),
+                .rowLimit = row.nullableInt(5),
                 .pollFrequency = row.boolean(6),
             },
             .dbAdapter = DatabaseAdapter{
-                .dbType = try res.arena.dupe(u8, row.text(7)),
+                .dbType = @enumFromInt(row.int(7)),
+                .columns = null,
+                .activeColumns = null,
             },
         });
     }
@@ -122,7 +124,9 @@ fn getUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
             .pollFrequency = row.boolean(6),
         };
         user.dbAdapter = DatabaseAdapter{
-            .dbType = row.text(7),
+            .dbType = @enumFromInt(row.int(7)),
+            .columns = null,
+            .activeColumns = null,
         };
     } else {
         res.status = 404;
@@ -147,7 +151,9 @@ fn getUserQuery(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
                 .pollFrequency = row.boolean(6),
             };
             user.dbAdapter = DatabaseAdapter{
-                .dbType = row.text(7),
+                .dbType = @enumFromInt(row.int(7)),
+                .columns = null,
+                .activeColumns = null,
             };
         } else {
             res.status = 404;
@@ -166,6 +172,7 @@ fn validateEmail(email: []const u8) bool {
     }
     return false;
 }
+
 const CreateUserRequest = struct {
     name: []const u8,
     email: []const u8,
@@ -176,10 +183,10 @@ fn createUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
         if (validateEmail(user.email)) {
             try app.conn.exec("insert into user (name, email) values ((?1), (?2))", .{ user.name, user.email });
             res.status = 204;
-        } else {
-            res.status = 400;
+            return;
         }
     }
+    res.status = 400;
 }
 
 fn deleteUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
@@ -251,8 +258,8 @@ fn updateUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
 
 fn createDb(app: *App) !void {
     try app.conn.exec("create table if not exists user (id integer primary key, name text not null, email text not null)", .{});
-    try app.conn.exec("create table if not exists subscription (id integer primary key, user_id integer not null, subscribed boolean, row_limit integer, column_limit integer, poll_frequency boolean, foreign key(user_id) references user(id))", .{});
-    try app.conn.exec("create table if not exists database_adapter (id integer primary key, user_id integer not null, type text check(type in ('None', 'Attio','ActiveCampaign')) default 'None', foreign key(user_id) references user(id))", .{});
+    try app.conn.exec("create table if not exists subscription (id integer primary key, user_id integer not null, subscribed boolean not null default false, row_limit integer, column_limit integer, poll_frequency boolean default false, foreign key(user_id) references user(id))", .{});
+    try app.conn.exec("create table if not exists database_adapter (id integer primary key, user_id integer not null, type int check(type in (0, 1, 2)) default 0, foreign key(user_id) references user(id))", .{});
 }
 
 fn createData(app: *App) !void {
