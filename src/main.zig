@@ -19,31 +19,27 @@ pub fn main() !void {
         .conn = conn,
     };
 
+    // try scaffoldDb(&app);
+
     var server = try httpz.Server(*App).init(allocator, .{ .port = 8080 }, &app);
     var router = try server.router(.{});
-    router.get("/", sayHello, .{});
     router.get("/users", getUsers, .{});
-    router.get("/users/:name", getUser, .{});
+    router.get("/users/:id", getUser, .{});
     router.get("/users/search", getUserQuery, .{});
     router.post("/users", createUser, .{});
-    router.delete("/users/:name", deleteUser, .{});
-    router.put("/users/:name", updateUser, .{});
+    router.delete("/users/:id", deleteUser, .{});
+    router.put("/users/:id", updateUser, .{});
     try server.listen();
 }
 
-fn sayHello(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
-    const HelloStruct = struct {
-        message: []const u8,
-    };
-    _ = app;
-    _ = req;
-
-    const hello = HelloStruct{ .message = "Hello, world!" };
-    try res.json(hello, .{});
-}
-
 const User = struct {
+    id: i64,
     name: []const u8,
+    email: []const u8,
+
+    pub fn init(name: []const u8, email: []const u8) User {
+        return .{ .name = name, .email = email };
+    }
 };
 
 fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
@@ -58,34 +54,44 @@ fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     var users = try std.ArrayList(User).initCapacity(res.arena, 4);
     defer users.deinit(res.arena);
     while (rows.next()) |row| {
-        const name: []const u8 = try res.arena.dupe(u8, row.text(0));
-        try users.append(res.arena, User{ .name = name });
+        const id: i64 = row.int(0);
+        const name: []const u8 = try res.arena.dupe(u8, row.text(1));
+        const email: []const u8 = try res.arena.dupe(u8, row.text(2));
+        try users.append(res.arena, User{ .id = id, .name = name, .email = email });
     }
     const usersSlice = try users.toOwnedSlice(res.arena);
     try res.json(usersSlice, .{});
 }
 
 fn getUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
-    const name_param = req.param("name").?;
+    const id_param = req.param("id").?;
+    var id: i64 = undefined;
     var name: []const u8 = undefined;
-    if (try app.conn.row("select * from user where name = (?1) collate nocase", .{name_param})) |row| {
+    var email: []const u8 = undefined;
+    if (try app.conn.row("select * from user where id = (?1)", .{id_param})) |row| {
         defer row.deinit();
-        name = try res.arena.dupe(u8, row.text(0));
+        id = row.int(0);
+        name = try res.arena.dupe(u8, row.text(1));
+        email = try res.arena.dupe(u8, row.text(2));
     } else {
         res.status = 404;
         return;
     }
-    const user = User{ .name = name };
+    const user = User{ .id = id, .name = name, .email = email };
     try res.json(user, .{});
 }
 
 fn getUserQuery(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     const query = try req.query();
+    var id: i64 = undefined;
     var name: []const u8 = undefined;
-    if (query.get("name")) |name_param| {
-        if (try app.conn.row("select * from user where name = (?1)", .{name_param})) |row| {
+    var email: []const u8 = undefined;
+    if (query.get("id")) |query_id| {
+        if (try app.conn.row("select * from user where id = (?1)", .{query_id})) |row| {
             defer row.deinit();
-            name = try res.arena.dupe(u8, row.text(0));
+            id = row.int(0);
+            name = try res.arena.dupe(u8, row.text(1));
+            email = try res.arena.dupe(u8, row.text(2));
         } else {
             res.status = 404;
             return;
@@ -94,24 +100,35 @@ fn getUserQuery(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
         res.status = 404;
         return;
     }
-    const user = User{ .name = name };
+    const user = User{ .id = id, .name = name, .email = email };
     try res.json(user, .{});
 }
 
+fn validateEmail(email: []const u8) bool {
+    if ((std.mem.indexOfScalar(u8, email, '@') != null) and (std.mem.indexOfScalar(u8, email, '.') != null)) {
+        return true;
+    }
+    return false;
+}
 const CreateUserRequest = struct {
     name: []const u8,
+    email: []const u8,
 };
 
 fn createUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     if (try req.json(CreateUserRequest)) |user| {
-        try app.conn.exec("insert into user values (?1)", .{user.name});
+        if (validateEmail(user.email)) {
+            try app.conn.exec("insert into user (name, email) values ((?1), (?2))", .{ user.name, user.email });
+            res.status = 204;
+        } else {
+            res.status = 400;
+        }
     }
-    res.status = 204;
 }
 
 fn deleteUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
-    const name_param = req.param("name").?;
-    app.conn.exec("delete from user where name = (?1) collate nocase", .{name_param}) catch |err| {
+    const id = req.param("id").?;
+    app.conn.exec("delete from user where id = (?1)", .{id}) catch |err| {
         std.debug.print("{any}\n", .{err});
         res.status = 500;
         res.body = "ERROR!";
@@ -120,32 +137,63 @@ fn deleteUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     res.status = 204;
 }
 
-const UpdateUserRequest = struct {
-    name: []const u8,
-};
-
 fn updateUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
-    const name_param = req.param("name").?;
-    if (try req.json(UpdateUserRequest)) |user| {
-        app.conn.exec("update user set name = (?1) where name = (?2) collate nocase", .{ user.name, name_param }) catch |err| switch (err) {
-            error.Notfound, error.Empty => {
-                res.status = 404;
+    const id = req.param("id").?;
+    if (try req.jsonObject()) |user| {
+        const name = user.get("name");
+        const email = user.get("email");
+        if (name == null and email != null) {
+            if (validateEmail(email.?.string)) {
+                app.conn.exec("update user set email = (?1) where id = (?2)", .{ email.?.string, id }) catch |err| switch (err) {
+                    error.Notfound, error.Empty => {
+                        res.status = 404;
+                        return;
+                    },
+                    else => {
+                        std.debug.print("{any}\n", .{err});
+                        res.status = 500;
+                        return;
+                    },
+                };
+                res.status = 204;
                 return;
-            },
-            else => {
-                std.debug.print("{any}\n", .{err});
-                res.status = 500;
+            }
+        } else if (name != null and email == null) {
+            app.conn.exec("update user set name = (?1) where id = (?2)", .{ name.?.string, id }) catch |err| switch (err) {
+                error.Notfound, error.Empty => {
+                    res.status = 404;
+                    return;
+                },
+                else => {
+                    std.debug.print("{any}\n", .{err});
+                    res.status = 500;
+                    return;
+                },
+            };
+            res.status = 204;
+            return;
+        } else {
+            if (validateEmail(email.?.string)) {
+                app.conn.exec("update user set name = (?1), email = (?2) where id = (?3)", .{ name.?.string, email.?.string, id }) catch |err| switch (err) {
+                    error.Notfound, error.Empty => {
+                        res.status = 404;
+                        return;
+                    },
+                    else => {
+                        std.debug.print("{any}\n", .{err});
+                        res.status = 500;
+                        return;
+                    },
+                };
+                res.status = 204;
                 return;
-            },
-        };
-    } else {
-        res.status = 400;
-        return;
+            }
+        }
     }
-    res.status = 204;
+    res.status = 400;
 }
 
 fn scaffoldDb(app: *App) !void {
-    try app.conn.exec("create table if not exists user (name text)", .{});
-    try app.conn.exec("insert into user values (?1), (?2)", .{ "Jake", "Kimmy" });
+    try app.conn.exec("create table if not exists user (id integer primary key, name text, email text)", .{});
+    try app.conn.exec("insert into user (name, email) values ((?1), (?2)), ((?3), (?4))", .{ "Jake", "jake@email.com", "Kimmy", "kimmy@email.com" });
 }
