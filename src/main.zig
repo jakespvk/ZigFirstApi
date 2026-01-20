@@ -229,6 +229,24 @@ fn deleteUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     res.status = 204;
 }
 
+fn updateUserEmail(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
+    const id = req.param("id").?;
+    var email: []const u8 = undefined;
+    if (try req.jsonObject()) |body| {
+        email = body.get("email");
+    }
+    if (!validateEmail(email)) {
+        res.status = 400;
+        try res.json(ErrorResponse{ .message = "Email must follow format name@domain.com" }, .{});
+    }
+    if (app.conn.row("select id from user where email = (?1)", .{email})) |_| {
+        res.status = 400;
+        try res.json(ErrorResponse{ .message = "Email is not unique" }, .{});
+    }
+    try app.conn.exec("update user set email = (?1) where id = (?2)", .{ email, id });
+    res.status = 204;
+}
+
 fn updateUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     const id = req.param("id").?;
     if (try req.jsonObject()) |user| {
