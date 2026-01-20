@@ -78,7 +78,7 @@ const DbType = enum {
 
 fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req;
-    var rows = try app.conn.rows("select * from user as u inner join subscription as s on u.id = s.user_id inner join database_adapter as d on u.id = d.user_id order by u.name", .{});
+    var rows = try app.conn.rows("select * from user as u left join subscription as s on u.id = s.user_id left join database_adapter as d on u.id = d.user_id order by u.name", .{});
     defer rows.deinit();
     if (rows.err) |err| {
         res.status = 500;
@@ -105,9 +105,16 @@ fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
             },
         });
     }
-    const usersSlice = try users.toOwnedSlice(res.arena);
-    try res.json(usersSlice, .{});
+    try res.json(users.items, .{});
 }
+
+// fn tryGetUserById(row: zqlite.Row, id: i64) !User {
+//     var user: User = undefined;
+//     user.id = row.int(0);
+//     user.name = row.text(1);
+//     user.email = row.text(2);
+//     if (
+// }
 
 fn getUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     const id_param = req.param("id").?;
@@ -178,15 +185,37 @@ const CreateUserRequest = struct {
     email: []const u8,
 };
 
+const ErrorResponse = struct {
+    message: []const u8,
+};
+
 fn createUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
-    if (try req.json(CreateUserRequest)) |user| {
-        if (validateEmail(user.email)) {
-            try app.conn.exec("insert into user (name, email) values ((?1), (?2))", .{ user.name, user.email });
-            res.status = 204;
-            return;
-        }
+    var user: User = undefined;
+    if (try req.json(CreateUserRequest)) |req_user| {
+        user.name = req_user.name;
+        user.email = req_user.email;
+    } else {
+        res.status = 400;
+        return;
     }
-    res.status = 400;
+    if (!validateEmail(user.email)) {
+        res.status = 400;
+        return;
+    }
+    if (try userExists(app, user.email)) {
+        res.status = 400;
+        try res.json(ErrorResponse{ .message = "User exists, please sign in instead" }, .{});
+        return;
+    }
+    try app.conn.exec("insert into user (name, email) values ((?1), (?2))", .{ user.name, user.email });
+    res.status = 204;
+}
+
+fn userExists(app: *App, email: []const u8) !bool {
+    if (try app.conn.row("select count(*) from user where email = (?1)", .{email})) |_| {
+        return true;
+    }
+    return false;
 }
 
 fn deleteUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
