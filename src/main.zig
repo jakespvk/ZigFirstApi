@@ -19,7 +19,8 @@ pub fn main() !void {
         .conn = conn,
     };
 
-    // try scaffoldDb(&app);
+    try createDb(&app);
+    // try createData(&app);
 
     var server = try httpz.Server(*App).init(allocator, .{ .port = 8080 }, &app);
     var router = try server.router(.{});
@@ -36,10 +37,43 @@ const User = struct {
     id: i64,
     name: []const u8,
     email: []const u8,
+    subscription: ?Subscription,
+    dbAdapter: ?DatabaseAdapter,
 
     pub fn init(name: []const u8, email: []const u8) User {
         return .{ .name = name, .email = email };
     }
+};
+
+const Subscription = struct {
+    rowLimit: u16,
+    columnLimit: u16,
+    pollFrequency: bool,
+    subscribed: bool,
+};
+
+const DatabaseAdapter = struct {
+    columns: ?[][]const u8,
+    activeColumns: ?[][]const u8,
+    dbType: DbType,
+
+    pub fn getColumns(self: DatabaseAdapter) ![][]const u8 {
+        _ = self;
+    }
+
+    pub fn setActiveColumns(self: *DatabaseAdapter) ![][]const u8 {
+        _ = self;
+    }
+
+    pub fn getData(self: DatabaseAdapter) !std.json.ObjectMap {
+        _ = self;
+    }
+};
+
+const DbType = enum {
+    None,
+    Attio,
+    ActiveCampaign,
 };
 
 fn getUsers(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
@@ -193,7 +227,12 @@ fn updateUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     res.status = 400;
 }
 
-fn scaffoldDb(app: *App) !void {
-    try app.conn.exec("create table if not exists user (id integer primary key, name text, email text)", .{});
+fn createDb(app: *App) !void {
+    try app.conn.exec("create table if not exists user (id integer primary key, name text not null, email text not null)", .{});
+    try app.conn.exec("create table if not exists subscription (id integer primary key, user_id integer not null, subscribed boolean, row_limit integer, column_limit integer, poll_frequency boolean, foreign key(user_id) references user(id))", .{});
+    try app.conn.exec("create table if not exists database_adapter (id integer primary key, user_id integer not null, type text check(type in (null, 'Attio','ActiveCampaign')) null default null, foreign key(user_id) references user(id))", .{});
+}
+
+fn createData(app: *App) !void {
     try app.conn.exec("insert into user (name, email) values ((?1), (?2)), ((?3), (?4))", .{ "Jake", "jake@email.com", "Kimmy", "kimmy@email.com" });
 }
